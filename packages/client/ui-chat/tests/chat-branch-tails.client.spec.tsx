@@ -3,10 +3,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   ChatConversationViewNode, ConversationNode,
 } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ChatNodeViewProps } from '../src/client/contract/slots.ts'
 import {
   formatMessageClock, msUntilNextLocalMidnight, startOfLocalDay,
@@ -16,7 +19,7 @@ import {
   UserMessageNodeView,
 } from '../src/client/chat/MessageItem.tsx'
 import { AssistantMarkdown, type AssistantMarkdownProps } from '../src/client/chat/AssistantMarkdown.tsx'
-import { StatsPills } from '../src/client/chat/StatsPills.tsx'
+import { StatsPills, type StatsPillsProps } from '../src/client/chat/StatsPills.tsx'
 import { zh } from '../src/client/locale.ts'
 import { chatSnapshotFixture } from './chat-snapshot-fixture.client.ts'
 
@@ -25,6 +28,16 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
+
+/** Root Session id for the pill's tree total; this spec renders no descendants. */
+const ROOT_SESSION_ID = 'root' as SessionId
+
+/** Global sessions seat stub: an empty list, so the pill keeps its own figure. */
+function noSubagentSessions(): StatsPillsProps['useSessions'] {
+  return bindSnapshotSelector(createSnapshotStore<SessionListState>({
+    ids: [], byId: {}, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+  }))
+}
 
 const t: ChatNodeViewProps['t'] = makeTranslate(zh, commonZh)
 const renderMessageImages: AssistantMarkdownProps['renderMessageImages'] = () => null
@@ -1047,7 +1060,9 @@ describe('small branch tails', () => {
     const view = render(
       <StatsPills
         t={t}
+        sessionId={ROOT_SESSION_ID}
         useChat={bindSnapshotSelector(source)}
+        useSessions={noSubagentSessions()}
         useProjection={(key: string) => key === 'tokenUsage'
           ? { uncachedInputTokens: 0, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 }
           : undefined}

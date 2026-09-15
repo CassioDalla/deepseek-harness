@@ -5,16 +5,39 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import type {
   AssistantMessageNode, ChatSnapshot, LegacyConversationSlice, ToolResultNode,
 } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type {
+  SessionListState, SessionSummary,
+} from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import { StatsPills, deriveStats, formatDuration, type StatsPillsProps } from '../src/client/chat/StatsPills.tsx'
+import { subagentUsageTotals } from '../src/client/chat/subagent-usage.ts'
 import { formatTokens } from '../src/client/chat/token-format.ts'
 import { en, zh } from '../src/client/locale.ts'
 import { chatSnapshotFixture } from './chat-snapshot-fixture.client.ts'
 
 const t: StatsPillsProps['t'] = makeTranslate(zh, commonZh)
 const tEn: StatsPillsProps['t'] = makeTranslate(en, commonEn)
+
+/** The pill's own Session: descendant summaries point their `parentId` here. */
+const ROOT_SESSION_ID = 'root' as SessionId
+
+/** One session-list row: required fields plus overrides. */
+function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
+  return {
+    id: id as SessionId, displayTitle: id, running: false, blank: false, updatedAt: 1, ...overrides,
+  }
+}
+
+/** Global sessions seat over a fixed `byId` table. */
+function sessionsHook(byId: Record<SessionId, SessionSummary>): StatsPillsProps['useSessions'] {
+  return bindSnapshotSelector(createSnapshotStore<SessionListState>({
+    ids: [], byId, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+  }))
+}
 
 afterEach(() => {
   cleanup()
@@ -75,6 +98,14 @@ describe('deriveStats', () => {
     expect(stats.toolMs).toBe(0)
   })
 
+  it('clamps a backwards step span to zero instead of crediting time back', () => {
+    const backwards: AssistantMessageNode = {
+      ...assistant(1, 1),
+      timing: { stepStartTime: 9_000, firstTokenTime: null, completedTime: 1_000 },
+    }
+    expect(deriveStats([backwards]).llmMs).toBe(0)
+  })
+
   it('sums LLM wall time from assistant timing and tool wall time from call/result pairs', () => {
     const timed: AssistantMessageNode = {
       ...assistant(1, 1),
@@ -124,6 +155,82 @@ describe('formatters', () => {
     expect(formatDuration(162_000, tEn)).toBe('2m42s')
   })
 })
+describe('subagentUsageTotals', () => {
+  /** All-zero totals: the shape every absent-descendant case returns. */
+  const ZERO = {
+    sessions: 0, uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, tokens: 0,
+  }
+
+  /** One child's usage projection with only the named buckets set. */
+  const usage = (
+    buckets: Partial<Record<'uncachedInputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'outputTokens', number>>,
+  ) => ({ uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, ...buckets })
+
+  it('sums each bucket separately over descendants at any depth', () => {
+    const totals = subagentUsageTotals(ROOT_SESSION_ID, {
+      [ROOT_SESSION_ID]: summary('root'),
+      ['child' as SessionId]: summary('child', {
+        parentId: ROOT_SESSION_ID,
+        origin: 'subagent',
+        projectionValues: {
+          tokenUsage: usage({ uncachedInputTokens: 10, cacheReadTokens: 90, outputTokens: 4 }),
+        },
+      }),
+      ['grandchild' as SessionId]: summary('grandchild', {
+        parentId: 'child' as SessionId,
+        origin: 'subagent',
+        projectionValues: { tokenUsage: usage({ cacheReadTokens: 5 }) },
+      }),
+    })
+    // The buckets stay separate so the dialog can show where a child's tokens went.
+    expect(totals).toEqual({
+      sessions: 2,
+      uncachedInputTokens: 10,
+      cacheReadTokens: 95,
+      cacheWriteTokens: 0,
+      outputTokens: 4,
+      tokens: 109,
+    })
+  })
+
+  it('ignores foreign trees, non-subagent rows, and orphans', () => {
+    const totals = subagentUsageTotals(ROOT_SESSION_ID, {
+      [ROOT_SESSION_ID]: summary('root'),
+      ['other' as SessionId]: summary('other'),
+      ['otherChild' as SessionId]: summary('otherChild', {
+        parentId: 'other' as SessionId,
+        origin: 'subagent',
+        projectionValues: { tokenUsage: usage({ uncachedInputTokens: 100 }) },
+      }),
+      ['orphan' as SessionId]: summary('orphan', {
+        parentId: 'missing' as SessionId,
+        origin: 'subagent',
+        projectionValues: { tokenUsage: usage({ uncachedInputTokens: 100 }) },
+      }),
+    })
+    expect(totals).toEqual(ZERO)
+  })
+
+  it('counts a descendant whose usage projection has not arrived, adding no tokens', () => {
+    const totals = subagentUsageTotals(ROOT_SESSION_ID, {
+      [ROOT_SESSION_ID]: summary('root'),
+      ['child' as SessionId]: summary('child', { parentId: ROOT_SESSION_ID, origin: 'subagent' }),
+    })
+    expect(totals).toEqual({ ...ZERO, sessions: 1 })
+  })
+
+  it('terminates a corrupt parent cycle instead of following it forever', () => {
+    const totals = subagentUsageTotals(ROOT_SESSION_ID, {
+      ['a' as SessionId]: summary('a', { parentId: 'b' as SessionId, origin: 'subagent' }),
+      ['b' as SessionId]: summary('b', { parentId: 'a' as SessionId, origin: 'subagent' }),
+    })
+    expect(totals).toEqual(ZERO)
+  })
+
+  it('reports no descendants before a Session is selected', () => {
+    expect(subagentUsageTotals(undefined, { [ROOT_SESSION_ID]: summary('root') })).toEqual(ZERO)
+  })
+})
 
 describe('StatsPills', () => {
   const USAGE = { uncachedInputTokens: 10, outputTokens: 5, cacheReadTokens: 90, cacheWriteTokens: 0 }
@@ -144,8 +251,15 @@ describe('StatsPills', () => {
   function props(
     source: { getSnapshot(): ChatSnapshot; subscribe(fn: () => void): () => void },
     values: Record<string, unknown> = { tokenUsage: USAGE },
+    byId: Record<SessionId, SessionSummary> = {},
   ): StatsPillsProps {
-    return { useChat: bindSnapshotSelector(source), useProjection: projections(values), t: tEn }
+    return {
+      sessionId: ROOT_SESSION_ID,
+      useChat: bindSnapshotSelector(source),
+      useProjection: projections(values),
+      useSessions: sessionsHook(byId),
+      t: tEn,
+    }
   }
 
   function tokenUsage(cacheReadTokens: number, uncachedInputTokens: number) {
@@ -432,6 +546,32 @@ describe('StatsPills', () => {
     // A session that did write cache keeps the row, exact.
     fireEvent.click(view.getAllByRole('button')[0]!)
     expect(view.getByRole('dialog').textContent).toContain('Cache write100 tok')
+  })
+
+  it('rolls subagent descendants into the pill total and reconciles them in the dialog', () => {
+    const { source } = makeSource({ nodes: [assistant(1, 1)] })
+    const child = summary('child', {
+      parentId: ROOT_SESSION_ID,
+      origin: 'subagent',
+      projectionValues: {
+        tokenUsage: { uncachedInputTokens: 40, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+    })
+    const view = render(<StatsPills {...props(source, { tokenUsage: USAGE }, { ['child' as SessionId]: child })} />)
+    const usagePill = view.getAllByRole('button')[0]!
+    // Own 105 tok (10 + 90 cached + 5 out) plus the child's 42: the pill reports
+    // the tree, while cache hit stays the own-route reading.
+    expect(usagePill.textContent).toBe('147 tok·Cache hit 90%')
+    fireEvent.click(usagePill)
+    const dialog = view.getByRole('dialog')
+    expect(dialog.textContent).toContain('Subagents (1)42 tok')
+    // The child's own buckets are listed, so a cache-dominated child is visible
+    // as such; a zero cache write drops its row, as the own-session block does.
+    expect(dialog.textContent).toContain('Subagent uncached input40 tok')
+    expect(dialog.textContent).toContain('Subagent cached input0 tok')
+    expect(dialog.textContent).toContain('Subagent output2 tok')
+    expect(dialog.textContent).not.toContain('Subagent cache write')
+    expect(dialog.textContent).toContain('Total incl. subagents147 tok')
   })
 
   it('renders ZERO times during streaming chunk frames (RFC hard acceptance)', () => {

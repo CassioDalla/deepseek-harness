@@ -1,6 +1,8 @@
 // Session stats under the composer, split into two icon pills: a gauge pill
 // (turn/step counts + output speed) opening the time-and-speed dialog, and a
-// database pill (total tokens + cache hit) opening the token-usage dialog.
+// database pill (whole-tree tokens + cache hit) opening the token-usage dialog.
+// The token figure is tree-inclusive: this Session's own provider buckets plus
+// every subagent descendant's, reconciled by the dialog's own two roll-up rows.
 // Settled-node identity prevents stream-delta updates from rerendering the row.
 // Mounted on 'conversation.composer.dock' so it sticks with the composer in the
 // active conversation scrollport (see ConversationRoot data-conversation-scroll).
@@ -9,7 +11,9 @@ import { memo, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { IconDatabaseOutline16, IconGaugeOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import type {
+  GlobalStandardProps, SessionStandardProps, SnapshotSelectorHook,
+} from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: merges the sessionStats key into SessionProjectionMap for useProjection.
 import type {} from '@deepseek-ai/dsh-session-stats/client'
 import type { TokenUsageProjection } from '@deepseek-ai/dsh-token-meter/client'
@@ -19,6 +23,7 @@ import { formatTokensPerSecond } from './message-chrome.ts'
 import { assistantStepReading } from '../contract/turn-metrics.ts'
 import { formatCacheHitPercent, formatExactTokens, formatTokens } from './token-format.ts'
 import { MEASURE_STYLE, useStatDialog } from './stat-dialog.ts'
+import { subagentUsageTotals, type SubagentUsageTotals } from './subagent-usage.ts'
 import css from './StatsPills.module.css'
 import dialogCss from './stat-dialog.module.css'
 
@@ -120,13 +125,20 @@ export function billedInputTokens(usage: TokenUsageProjection): number {
   return usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
 }
 
-/** Props: the conversation-snapshot selector plus the projection read seat. */
-export interface StatsPillsProps {
-  useChat: SnapshotSelectorHook<ChatSnapshot>
-  useProjection: UseProjection
-  /** The owning dock's locale seat. */
-  t: ChatViewSlotProps['t']
-}
+/**
+ * Props: the conversation-snapshot selector plus the framework seats the tree
+ * total reads — the session-list seat for descendant summaries, and the Session
+ * identity the roll-up is rooted at.
+ */
+export type StatsPillsProps =
+  & Pick<SessionStandardProps, 'sessionId'>
+  & Pick<GlobalStandardProps, 'useSessions'>
+  & {
+    useChat: SnapshotSelectorHook<ChatSnapshot>
+    useProjection: UseProjection
+    /** The owning dock's locale seat. */
+    t: ChatViewSlotProps['t']
+  }
 
 function exactCount(value: number, t: ChatViewSlotProps['t']): string {
   return t('message.turnUsage.count', { count: formatExactTokens(value, t) })
@@ -233,15 +245,20 @@ function TimePill({ stats, t, dialog }: {
   )
 }
 
-function UsagePill({ usage, t, dialog }: {
+function UsagePill({ usage, subagents, t, dialog }: {
   usage: TokenUsageProjection
+  subagents: SubagentUsageTotals
   t: ChatViewSlotProps['t']
   dialog: PillDialog
 }) {
   const { open, setOpen, rootRef, panelRef, pos } = useStatDialog(dialog)
-  // Same aggregate as the Turn pill's totalTokens: every prompt-side billing bucket plus output.
-  const total = billedInputTokens(usage) + usage.outputTokens
+  // Same aggregate as the Turn pill's totalTokens: every prompt-side billing
+  // bucket plus output, extended by the descendants' billed total — the pill
+  // answers "what did this conversation tree consume".
+  const total = billedInputTokens(usage) + usage.outputTokens + subagents.tokens
   const totalText = t('message.turnUsage.count', { count: formatTokens(total, t) })
+  // Cache hit stays own-only: children may run other routes, so a hit rate
+  // aggregated over their prompts would describe no actual request.
   const cacheHit = cacheHitPercent(usage)
   const cacheHitText = cacheHit !== null ? t('stats.cacheHit', { percent: cacheHit }) : null
   return (
@@ -305,6 +322,26 @@ function UsagePill({ usage, t, dialog }: {
             )}
             <dt>{t('message.turnUsage.output')}</dt>
             <dd>{exactCount(usage.outputTokens, t)}</dd>
+            {subagents.sessions > 0 && (
+              <>
+                <dt>{t('stats.dialog.subagents', { sessions: subagents.sessions })}</dt>
+                <dd>{exactCount(subagents.tokens, t)}</dd>
+                <dt>{t('stats.dialog.subagentInput')}</dt>
+                <dd>{exactCount(subagents.uncachedInputTokens, t)}</dd>
+                <dt>{t('stats.dialog.subagentCacheRead')}</dt>
+                <dd>{exactCount(subagents.cacheReadTokens, t)}</dd>
+                {subagents.cacheWriteTokens !== 0 && (
+                  <>
+                    <dt>{t('stats.dialog.subagentCacheWrite')}</dt>
+                    <dd>{exactCount(subagents.cacheWriteTokens, t)}</dd>
+                  </>
+                )}
+                <dt>{t('stats.dialog.subagentOutput')}</dt>
+                <dd>{exactCount(subagents.outputTokens, t)}</dd>
+                <dt>{t('stats.dialog.total')}</dt>
+                <dd>{exactCount(total, t)}</dd>
+              </>
+            )}
           </dl>
           {/* jscpd:ignore-end */}
         </div>,
@@ -314,9 +351,19 @@ function UsagePill({ usage, t, dialog }: {
   )
 }
 
-export const StatsPills = memo(function StatsPills({ useChat, useProjection, t }: StatsPillsProps) {
+export const StatsPills = memo(function StatsPills({
+  sessionId, useChat, useProjection, useSessions, t,
+}: StatsPillsProps) {
   const settledNodes = useChat(s => s.legacy.nodes)
   const usage = useProjection('tokenUsage')
+  // Descendant summaries carry each subagent's own usage projection, so the
+  // tree total costs one fold and no request; the lineage tree renders the same
+  // figures per child.
+  const summaries = useSessions(s => s.byId)
+  const subagents = useMemo(
+    () => subagentUsageTotals(sessionId, summaries),
+    [sessionId, summaries],
+  )
   // One exclusive slot for both dialogs: opening either pill closes the other.
   const [openPill, setOpenPill] = useState<'time' | 'usage' | null>(null)
   // Every figure rides the durable sessionStats projection, so paging and
@@ -347,6 +394,7 @@ export const StatsPills = memo(function StatsPills({ useChat, useProjection, t }
       {hasTokens && (
         <UsagePill
           usage={usage}
+          subagents={subagents}
           t={t}
           dialog={{
             open: openPill === 'usage',

@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-15-subagent-inclusive-session-token-total.md
+2026-09-15-subagent-inclusive-session-token-total.md: 9fca159f3ebcae3e44baeda686a94e999afcee90
+2026-09-15-subagent-inclusive-session-token-total.zh.md: ebc3cdd77d8acdc532dbe0acc600fee9df550fc5

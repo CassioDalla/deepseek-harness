@@ -3,9 +3,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render } from '@testing-library/react'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { AssistantMarkdown, type AssistantMarkdownProps } from '../src/client/chat/AssistantMarkdown.tsx'
-import { StatsPills } from '../src/client/chat/StatsPills.tsx'
+import { StatsPills, type StatsPillsProps } from '../src/client/chat/StatsPills.tsx'
 import { zh } from '../src/client/locale.ts'
 import { chatSnapshotFixture } from './chat-snapshot-fixture.client.ts'
 
@@ -17,6 +20,15 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/** Root Session id for the pill's tree total; this spec renders no descendants. */
+const ROOT_SESSION_ID = 'root' as SessionId
+
+/** Global sessions seat stub: an empty list, so the pill keeps its own figure. */
+function noSubagentSessions(): StatsPillsProps['useSessions'] {
+  return bindSnapshotSelector(createSnapshotStore<SessionListState>({
+    ids: [], byId: {}, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+  }))
+}
 
 describe('render branch tails', () => {
   it('AssistantMarkdown reasoning row is ok-state when not the streaming tail', () => {
@@ -47,7 +59,9 @@ describe('render branch tails', () => {
     const view = render(
       <StatsPills
         t={t}
+        sessionId={ROOT_SESSION_ID}
         useChat={bindSnapshotSelector(source)}
+        useSessions={noSubagentSessions()}
         useProjection={() => undefined}
       />,
     )
