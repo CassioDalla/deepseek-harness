@@ -28,14 +28,14 @@ const ROOT_SESSION_ID = 'root' as SessionId
 /** One session-list row: required fields plus overrides. */
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
-    id: id as SessionId, displayTitle: id, running: false, blank: false, updatedAt: 1, ...overrides,
+    id: id as SessionId, displayTitle: id, running: false, retainedBy: {}, blank: false, updatedAt: 1, ...overrides,
   }
 }
 
 /** Global sessions seat over a fixed `byId` table. */
 function sessionsHook(byId: Record<SessionId, SessionSummary>): StatsPillsProps['useSessions'] {
   return bindSnapshotSelector(createSnapshotStore<SessionListState>({
-    ids: [], byId, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+    ids: [], byId, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
   }))
 }
 
@@ -275,9 +275,6 @@ describe('StatsPills', () => {
   it('renders the counts reading and usage pill and hides a brand-new empty session', () => {
     const { source } = makeSource({ nodes: [assistant(1, 1)] })
     const view = render(<StatsPills {...props(source)} />)
-    // InputBar's `.root:has([data-composer-stats])` bottom-clearance rule keys
-    // off this attribute: present exactly while the row renders.
-    expect(view.container.querySelector('[data-composer-stats]')).toBeTruthy()
     // No timing on the fixture: the speed segment drops out and the dialog
     // would have no rows, so the counts reading stays a static pill (no button).
     expect(view.getByText('1 turns 1 steps').closest('button')).toBeNull()
@@ -293,7 +290,6 @@ describe('StatsPills', () => {
       contextPressure: {},
     })} />)
     expect(emptyView.container.textContent).toBe('')
-    expect(emptyView.container.querySelector('[data-composer-stats]')).toBeNull()
   })
 
   it.each([

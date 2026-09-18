@@ -26,7 +26,7 @@ const ROOT_SESSION_ID = 'root' as SessionId
 /** Global sessions seat stub: an empty list, so the pill keeps its own figure. */
 function noSubagentSessions(): StatsPillsProps['useSessions'] {
   return bindSnapshotSelector(createSnapshotStore<SessionListState>({
-    ids: [], byId: {}, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+    ids: [], byId: {}, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
   }))
 }
 
