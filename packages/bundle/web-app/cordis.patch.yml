@@ -323,6 +323,14 @@
     - id: ui-subagent
       name: '@deepseek-ai/dsh-client-ui-subagent'
 
+    # Subagent token roll-up: a second composer-dock pill reporting what the
+    # viewed Session's subagent descendants billed, with a dialog reconciling
+    # their provider buckets against the Session's own figure. Additive:
+    # ui-chat's own stats pill is unchanged, and this entry renders only while
+    # descendants exist. Remove this row to turn the surface off.
+    - id: ui-subagent-tokens
+      name: '@deepseek-ai/dsh-client-ui-subagent-tokens'
+
     - id: ui-reference
       name: '@deepseek-ai/dsh-client-ui-reference'
 
